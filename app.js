@@ -9,7 +9,8 @@ app.listen(3000, function () {
   console.log('Example app listening on port 3000!')
 })
 
-const { Client } = require('pg')// "node-postgres"
+const { Pool, Client } = require('pg') // "node-postgres"
+
 const client = new Client({
   user: 'odmin',
   host: 'localhost',
@@ -19,8 +20,15 @@ const client = new Client({
 })
 client.connect()
 
+// const pool = new Pool()
+// client.query('SELECT * FROM feedbacks;', (err, res) => {
+//   console.log(err, res)
+//   pool.end()
+//   console.log('pool end', res.rows[0])
+// })
+
 app.post('/feeduser', function (req, res) { // load user
-  const query = `INSERT INTO feeduser VALUES ('${req.body.name}') `// SQL
+  const query = `INSERT INTO feeduser VALUES ('${req.body.name}') ` // SQL
   client
     .query(query)
     .then(res => console.log('POST user in feeduser succes'))
@@ -45,4 +53,14 @@ app.post('/feedbacks', function (req, res) { // load feedback
     .then(res => console.log('POST oneFeedback in feedbacks succes'))
     .catch(e => console.error(e.stack))
   res.send('server/ feedbacks done')
+})
+
+app.get('/feedbacks', function (req, res) { // fetch Feedbacks from DB
+  const query = `SELECT * FROM feedbacks;`
+  client
+    .query(query)
+    .then(res => console.log('GET getFeedbacks in feedbacks succes', res))
+    .catch(e => console.error(e.stack))
+  // console.log(res)
+  return res.json()
 })
