@@ -11,7 +11,7 @@ app.use(
     extended: true
   })
 )
-app.use(express.static(__dirname))
+app.use(express.static('uploads'))
 
 app.listen(3000, function () {
   console.log('Example app listening on port 3000!')
@@ -43,7 +43,7 @@ const upload = multer({
   dest: IMAGE_PATH
 })
 
-// load photo on server and Get the Name of file 
+// load photo on server and Get the Name of file
 app.post('/upload', upload.single('fileImg'), function (req, res, next) {
   const filedata = req.file
   if (!filedata) {
@@ -95,7 +95,6 @@ app.post('/company', async function (req, res) {
 // post feedback
 app.post('/feedbacks', function (req, res) {
   const reqJson = req.body.feedback
-  console.log('id-company ::: ', reqJson.id_company)
   const query = `INSERT INTO feedbacks (username,  review, date, rate, id_company, name_img) VALUES ( 
     '${reqJson.userName}',
     '${reqJson.feedbackText}',
@@ -113,7 +112,7 @@ app.post('/feedbacks', function (req, res) {
 
 // fetch Feedbacks from DB
 app.get('/allfeedbacks', function (req, res) {
-  pool.query('SELECT * FROM feedbacks;', (error, results) => {
+  pool.query('SELECT username, id_company, review, date, rate, name_img, feedbacks.id, name_company, address FROM feedbacks INNER JOIN company ON feedbacks.id_company=company.id;', (error, results) => { // inner join
     if (error) {
       throw error
     }
