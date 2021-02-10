@@ -21,33 +21,65 @@ app.listen(3000, function () {
   console.log('Example app listening on port 3000!')
 })
 
-const {
-  Pool,
-  Client
-} = require('pg') // "node-postgres"
 const htmlText = require('./template-mail')
 
-const client = new Client({
-  user: process.env.DB_USER,
-  host: process.env.HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_USER_PASS,
-  port: process.env.PORT
+const knex = require('knex')({
+  client: 'pg',
+  connection: {
+    host: process.env.HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_USER_PASS,
+    database: process.env.DB_NAME,
+    port: process.env.PORT
+  }
 })
 
-client.connect()
-
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_USER_PASS,
-  port: process.env.PORT
-})
 const secretKey = process.env.ACCESS_KEY
 var secretForRecoverPass = ''
 const upload = multer({
   dest: process.env.IMAGE_PATH
+})
+
+const bookshelf = require('bookshelf')(knex)
+
+const Company = bookshelf.model(
+  'Company',
+  {
+    tableName: 'company',
+    feedbacks () {
+      return this.hasMany('Feedback')
+    }
+  })
+
+const Feedback = bookshelf.model(
+  'Feedback',
+  {
+    tableName: 'feedbacks',
+    company () {
+      return this.belongsTo('Company')
+    }
+  })
+
+const User = bookshelf.model(
+  'User',
+  {
+    tableName: 'users'
+  })
+
+// all feedbacks of one company
+app.get('/allfeedbacks/:company_id', async function (req, res) {
+  new Company({ id: 42 }).fetch({ withRelated: ['feedbacks'] })
+    .then((companies) => {
+      console.log(companies.toJSON())
+    })
+})
+
+// fetch Feedbacks from DB
+app.get('/allfeedbacks', async function (req, res) {
+  new Feedback().fetchAll({ withRelated: ['company'] })
+    .then(result => {
+      console.log('Result ::::', result.related('company').toJSON())
+    })
 })
 
 // load photo on server and Get the Name of file
@@ -69,14 +101,16 @@ app.post('/upload', upload.single('fileImg'), function (req, res, next) {
 //  user Log In
 app.post('/login', async function (req, res) {
   try {
-    const query = 'SELECT user_name, email, pass, id_user FROM users WHERE email=$1 AND pass=$2'
-    const resultQuery = await client.query(query, [req.body.email, req.body.pass])
-    if (resultQuery.rows.length) {
-      // return JWT
+    // email & pass authentication
+    let result = await User.where({ email: req.body.email, pass: req.body.pass })
+      .fetch({ columns: ['user_name', 'email', 'pass', 'id_user'] })
+    result = result.toJSON()
+    if (result) {
+      // authentication done - return JWT
       const accessToken = await jwt.sign({
-        name: resultQuery.rows[0].user_name,
-        email: resultQuery.rows[0].email,
-        id: resultQuery.rows[0].id_user
+        name: result.user_name,
+        email: result.email,
+        id: result.id_user
       },
       secretKey, {
         expiresIn: '1h'
@@ -98,28 +132,32 @@ app.post('/login', async function (req, res) {
 // recover password
 app.post('/recover', async function (req, res) {
   try {
-    // check: Is user/email exists?
-    const query = 'SELECT email, id_user, pass FROM users WHERE email=$1'
-    const result = await client.query(query, [req.body.email])
+    // check: Does user/email exist?
+    let result = await User.where({ email: req.body.email })
+      .fetch({ columns: ['user_name', 'email', 'pass', 'id_user'] })
+
     // user not exists
-    if (!result.rows.length) {
+    if (!result) {
       return res.status(404).json({
         status: 'failed',
-        message: 'Sorry, we can not find user with that email!'
+        message: 'Sorry, we can`t find user with that email!'
       })
     }
     // User exists. Do JWT (for link) (hash-old-pass)+id
-    // const emailDestination = result.rows[0].email
-    secretForRecoverPass = result.rows[0].pass + '-' + result.rows[0].id_user // oldPassHash + id
+    result = result.toJSON()
+    // const emailDestination = result.email
+    secretForRecoverPass = result.pass + '-' + result.id_user // oldPassHash + id
     const keyUrlForRecover = jwt.sign({
-      userId: result.rows[0].id_user
+      userId: result.id_user
     }, secretForRecoverPass, {
-      expiresIn: 60
+      expiresIn: '1h'
     })
-
     // write in DB keyUrlForRecover
-    const queryInsert = 'UPDATE users SET recover_token=$1 WHERE id_user=$2'
-    await client.query(queryInsert, [keyUrlForRecover, result.rows[0].id_user])
+    await User.where({ id_user: result.id_user })
+      .save(
+        { recover_token: keyUrlForRecover },
+        { method: 'update', patch: true }
+      )
 
     // send to email JWT for URL
     const transporter = nodemailer.createTransport({
@@ -153,16 +191,22 @@ app.post('/recover', async function (req, res) {
         })
       }
     })
-  } catch (err) {
-    return res.status(500).send(err.stack)
+  } catch (e) {
+    return res.status(500).json({
+      status: 'failed',
+      message: 'Fail create recover-pass-key OR sending email.'
+    })
   }
 })
 
 // registration new user
 app.post('/user', async function (req, res) {
-  const query = 'INSERT INTO users (user_name, email, pass) VALUES ($1, $2, $3)'
   try {
-    await client.query(query, [req.body.name, req.body.email, req.body.pass])
+    await User.forge().save({
+      user_name: req.body.name,
+      email: req.body.email,
+      pass: req.body.pass
+    })
     console.log('POST user in users succes !')
     return res.json({
       status: 'success',
@@ -172,111 +216,130 @@ app.post('/user', async function (req, res) {
     console.error(e.stack)
     return res.status(400).json({
       status: 'failed',
-      message: 'Add new user failed !'
+      message: 'Add new user failed or user-name already exist.'
     })
   }
 })
 
 // update user
 app.post('/users/upd', async function (req, res) {
-  try {
-    const upd = 'UPDATE users SET pass=$1, recover_token=null WHERE email=$2'
-    await client.query(upd, [req.body.pass, req.body.email])
-    console.log('New password saved succes !')
-    return res.json({
-      status: 'success',
-      message: 'Update user success !'
+  User.where({ email: req.body.email })
+    .save(
+      { pass: req.body.pass },
+      { method: 'update', patch: true }
+    )
+    .then(result => {
+      console.log(result)
+      return res.json({
+        status: 'success',
+        message: 'Update user success !'
+      })
     })
-  } catch (e) {
-    console.error(e.stack)
-    return res.status(400).json({
-      status: 'failed',
-      message: 'Update user failed !'
+    .catch((e) => {
+      console.error(e.stack)
+      return res.status(400).json({
+        status: 'failed',
+        message: 'Update user failed !'
+      })
     })
-  }
 })
 
 // post company
 app.post('/company', async function (req, res) {
   try {
-    const query = 'SELECT id FROM company WHERE name=$1 AND address=$2'
-    const resultQuery = await client.query(query, [req.body.name, req.body.address])
-    if (resultQuery.rows.length) {
-      // company exists - we have id
+    const result = await Company.where({ name_company: req.body.name, address: req.body.address })
+      .fetch({ require: false, columns: 'id' })
+    if (result) { // company exists
       return res.json({
         status: 'success',
-        id: resultQuery.rows[0].id
+        message: 'Company exists !'
       })
     }
-    // if company NOT exists - add newone
-    const queryInsert = 'INSERT INTO company (name, address) VALUES ($1, $2) RETURNING id'
-    const result = await client.query(queryInsert, [req.body.name, req.body.address])
-    if (resultQuery.rows.length) {
-      return res.json({
-        status: 'success',
-        message: 'Added new company.',
-        id: result.rows[0].id
-      })
-    }
-  } catch (err) {
-    console.error(err.stack)
-    return res.status(500).json({
+    // company not exists, INSERT new company
+    await Company.forge().save({ name_company: req.body.name, address: req.body.address })
+    console.log('Save done !')
+    return res.status(200).json({
+      status: 'success',
+      message: 'New company added successfull'
+    })
+  } catch (e) {
+    console.log(e.stack)
+    return res.status(400).json({
       status: 'failed',
-      message: 'Company not added. Query not done.'
+      message: 'Company find or add failed !'
     })
   }
 })
 
 // fetch user email for recover
 app.post('/email', async function (req, res) {
-  try {
-    const payloadJwt = await jwt.verify(req.body.token, secretForRecoverPass)
-    console.log('verify JWT  done ::: ', payloadJwt)
-    const query = 'SELECT email FROM users WHERE id_user=$1'
-    const result = await client.query(query, [payloadJwt.userId])
-    return res.json({
-      status: 'success',
-      message: 'Key for reset password verifyed.',
-      userEmail: result.rows[0].email
+  const payloadJwt = await jwt.verify(req.body.token, secretForRecoverPass)
+  console.log('verify JWT  done ::: ', payloadJwt)
+  User.where({ id_user: payloadJwt.userId })
+    .fetch({ columns: 'email' }) // SELECT email WHERE id=(id from token)
+    .then(result => {
+      console.log('email ::: ', result.toJSON().email)
+      return res.json({
+        status: 'success',
+        message: 'Key for reset password verifyed.',
+        userEmail: result.toJSON().email
+      })
     })
-  } catch (err) {
-    console.log(err.stack)
-    return res.status(404).json({
-      status: 'failed',
-      message: 'The Link for reset password deprecated. Plese go to "Forgot Password.'
+    .catch(e => {
+      console.log(e.stack)
+      return res.status(404).json({
+        status: 'failed',
+        message: 'The Link for reset password deprecated. Plese go to "Forgot Password.'
+      })
     })
-  }
 })
 
 // post feedback
 app.post('/feedbacks', function (req, res) {
-  try {
-    const reqJson = req.body.feedback
-    const query = 'INSERT INTO feedbacks (username,  review, date, rate, id_company, name_img) VALUES ($1, $2, $3, $4, $5, $6)'
-    client.query(query, [reqJson.userName, reqJson.feedbackText, reqJson.date, reqJson.rate, reqJson.id_company, reqJson.filename_img])
-    return res.json({
-      status: 'success',
-      message: 'POST oneFeedback in feedbacks success.'
+  const reqJson = req.body.feedback
+  console.log('req.body ::: ', reqJson)
+  Feedback.forge().save({ // INSERT in feedbacks
+    username: reqJson.userName,
+    review: reqJson.feedbackText,
+    date: reqJson.date,
+    rate: reqJson.rate,
+    company_id: reqJson.id_company,
+    name_img: reqJson.filename_img
+  })
+    .then((feedback) => {
+      console.log('[posted feedback success]', feedback)
+      return res.json({
+        status: 'success',
+        message: 'POST oneFeedback in feedbacks success.'
+      })
     })
-  } catch (err) {
-    console.log(err.stack)
-    return res.status(400).json({
-      status: 'failed',
-      message: 'Query INSERT failed.'
+    .catch((e) => {
+      console.log(e.stack)
+      return res.status(400).json({
+        status: 'failed',
+        message: 'Query INSERT failed.'
+      })
     })
-  }
 })
 
-// fetch Feedbacks from DB
-app.get('/allfeedbacks', function (req, res) {
-  const query = `SELECT username, id_company, review, date, rate, name_img, feedbacks.id, name_company, address 
-  FROM feedbacks 
-  INNER JOIN company 
-  ON feedbacks.id_company=company.id;`
-  pool.query(query, (error, results) => { // inner join
-    if (error) {
-      throw error
-    }
-    return res.status(200).json(results.rows)
-  })
-})
+// app.get('/allfeedbacks', async function (req, res) {
+  // try {
+  //   const result = await knex.from('feedbacks')
+  //     .select('username', 'id_company', 'review', 'date', 'rate', 'name_img', 'feedbacks.id', 'name_company', 'address')
+  //     .innerJoin('company', 'feedbacks.id_company', 'company.id')
+  //   console.log('Get feedbacks success.')
+  //   if (result.length) {
+  //     return res.status(200).json({
+  //       status: 'success',
+  //       message: 'GET all feedbacks success.',
+  //       result: result
+  //     })
+  //   }
+  // } catch (e) {
+  //   console.log(e.stack)
+  //   return res.status(400).json({
+  //     status: 'failed',
+  //     message: 'Get all feedbacks failed.'
+  //   })
+  // }
+// })
