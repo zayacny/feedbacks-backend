@@ -67,23 +67,31 @@ const User = bookshelf.model(
   })
 
 // all feedbacks of one company
-app.get('/allfeedbacks/:company_id', async function (req, res) {
-  new Company({ id: 42 }).fetch({ withRelated: ['feedbacks'] })
-    .then((companies) => {
-      console.log(companies.toJSON())
-    })
-})
+// app.get('/allfeedbacks/:company_id', async function (req, res) {
+//   new Company({ id: 42 }).fetch({ withRelated: ['feedbacks'] })
+//     .then((companies) => {
+//       console.log(companies.toJSON())
+//     })
+// })
 
 // fetch Feedbacks from DB
 app.get('/allfeedbacks', async function (req, res) {
   new Feedback().fetchAll({ withRelated: ['company'] })
     .then(result => {
-      console.log('Result ::::', result.related('company').toJSON())
+      console.log('Fetch all feedbacks success', result.toJSON())
+      return res.status(200).json(result)
+    })
+    .catch((e) => {
+      console.error(e.stack)
+      return res.status(400).json({
+        status: 'failed',
+        message: 'Get all feedbacks failed !'
+      })
     })
 })
 
 // load photo on server and Get the Name of file
-app.post('/upload', upload.single('fileImg'), function (req, res, next) {
+app.post('/upload', upload.single('fileImg'), function (req, res) {
   const filedata = req.file
   if (!filedata) {
     return res.status(406).json({
@@ -93,7 +101,7 @@ app.post('/upload', upload.single('fileImg'), function (req, res, next) {
   } else {
     return res.json({
       status: 'success',
-      filename: filedata.filename
+      fileName: filedata.filename
     })
   }
 })
@@ -200,7 +208,7 @@ app.post('/recover', async function (req, res) {
 })
 
 // registration new user
-app.post('/user', async function (req, res) {
+app.post('/users', async function (req, res) {
   try {
     await User.forge().save({
       user_name: req.body.name,
@@ -256,11 +264,12 @@ app.post('/company', async function (req, res) {
       })
     }
     // company not exists, INSERT new company
-    await Company.forge().save({ name_company: req.body.name, address: req.body.address })
-    console.log('Save done !')
+    const responseDB = await Company.forge().save({ name_company: req.body.name, address: req.body.address })
+    console.log('Company Save done !')
     return res.status(200).json({
       status: 'success',
-      message: 'New company added successfull'
+      message: 'New company added successfull',
+      id_company: responseDB.id
     })
   } catch (e) {
     console.log(e.stack)
@@ -304,7 +313,7 @@ app.post('/feedbacks', function (req, res) {
     date: reqJson.date,
     rate: reqJson.rate,
     company_id: reqJson.id_company,
-    name_img: reqJson.filename_img
+    name_img: reqJson.fileNameImg
   })
     .then((feedback) => {
       console.log('[posted feedback success]', feedback)
@@ -321,25 +330,3 @@ app.post('/feedbacks', function (req, res) {
       })
     })
 })
-
-// app.get('/allfeedbacks', async function (req, res) {
-  // try {
-  //   const result = await knex.from('feedbacks')
-  //     .select('username', 'id_company', 'review', 'date', 'rate', 'name_img', 'feedbacks.id', 'name_company', 'address')
-  //     .innerJoin('company', 'feedbacks.id_company', 'company.id')
-  //   console.log('Get feedbacks success.')
-  //   if (result.length) {
-  //     return res.status(200).json({
-  //       status: 'success',
-  //       message: 'GET all feedbacks success.',
-  //       result: result
-  //     })
-  //   }
-  // } catch (e) {
-  //   console.log(e.stack)
-  //   return res.status(400).json({
-  //     status: 'failed',
-  //     message: 'Get all feedbacks failed.'
-  //   })
-  // }
-// })
